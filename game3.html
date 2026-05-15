@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>3D Лабиринт Финал</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #000; font-family: 'Courier New', monospace; user-select: none; }
+        canvas { display: block; width: 100vw; height: 100vh; background-color: #000; }
+        #lock-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #0f0; font-size: 24px; text-align: center; pointer-events: none; text-shadow: 0 0 10px #000; display: none; }
+        #menu-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #1e1e1e; z-index: 10; }
+        .menu-title { color: #f00; font-size: 46px; font-weight: bold; margin-bottom: 40px; text-align: center; }
+        .menu-btn { width: 380px; height: 60px; background: #323232; color: #fff; border: 2px solid #000; font-family: 'Courier New', monospace; font-size: 18px; cursor: pointer; margin-bottom: 20px; transition: background 0.2s; }
+        .menu-btn:hover { background: #444; }
+        .slider-container { display: flex; flex-direction: column; align-items: center; color: #fff; margin-top: 20px; }
+        .slider-container label { margin-bottom: 10px; font-size: 16px; }
+        .slider-container input { width: 250px; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div id="menu-container">
+    <div class="menu-title">3D ЛАБИРИНТ PRO</div>
+    <button class="menu-btn" onclick="startGame(false)">ОБЫЧНЫЙ РЕЖИМ</button>
+    <button class="menu-btn" onclick="startGame(true)">DARK MODE (ХОРРОР)</button>
+    <div class="slider-container">
+        <label id="sens-label">Чувствительность мыши: 1.0</label>
+        <input type="range" id="sens-slider" min="0.2" max="3.0" step="0.1" value="1.0" oninput="updateSens(this.value)">
+    </div>
+</div>
+
+<div id="lock-overlay">КЛИКНИТЕ ПО ЭКРАНУ ДЛЯ ВОЗВРАТА В ИГРУ</div>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+const lockOverlay = document.getElementById("lock-overlay");
+const menuContainer = document.getElementById("menu-container");
+
+function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+let currentState = 0; 
+let mouseSensitivity = 0.0025;
+let mouseX = 0, mouseY = 0;
+
+function updateSens(val) {
+    document.getElementById("sens-label").innerText = `Чувствительность мыши: ${val}`;
+    mouseSensitivity = 0.0025 * parseFloat(val);
+}
+
+canvas.addEventListener("click", () => {
+    if (currentState === 1) { canvas.requestPointerLock(); }
+    initAudio();
+});
+
+document.addEventListener("pointerlockchange", () => {
+    if (currentState === 1) {
+        lockOverlay.style.display = document.pointerLockElement === canvas ? "none" : "block";
+    } else {
+        lockOverlay.style.display = "none";
+    }
+});
+
+document.addEventListener("mousemove", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left;
+    mouseY = e.clientY - rect.top;
+
+    if (currentState === 1 && document.pointerLockElement === canvas) {
+        player.angle += e.movementX * mouseSensitivity;
+        player.pitch -= e.movementY * mouseSensitivity * 400;
+        player.pitch = Math.max(-250, Math.min(250, player.pitch));
+    }
+});
+
+window.addEventListener("mousedown", () => {
+    if (currentState === 2 || currentState === 3) {
+        currentState = 0;
+        menuContainer.style.display = "flex";
+    }
+});
+
+// --- МЕДИАФАЙЛЫ ---
+const imgMonster1 = new Image(); imgMonster1.src = 'monster1.jpg';
+const imgMonster2 = new Image(); imgMonster2.src = 'monster2.jpg';
+const imgNote = new Image(); imgNote.src = 'note.jpg';
+
+const sndStep = new Audio('step.mp3'); sndStep.volume = 0.4;
+const sndChase = new Audio('chase.mp3'); sndChase.volume = 0.5; sndChase.loop = true;
+const sndHit = new Audio('hit.mp3'); sndHit.volume = 0.6;
+const sndBreath = new Audio('breath.mp3'); sndBreath.volume = 0.4; sndBreath.loop = true;
+const sndDeath = new Audio('death.mp3'); sndDeath.volume = 0.8;
+
+let chaseFilePlaying = false;
+let breathFilePlaying = false;
+
+let audioCtx = null, ambientOsc = null, ambientGain = null;
+let synthChaseOsc = null, synthChaseGain = null;
+let synthBreathOsc = null, synthBreathGain = null;
+
+function initAudio() { 
+    if (audioCtx) return;
+    try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        ambientOsc = audioCtx.createOscillator(); ambientGain = audioCtx.createGain();
+        ambientOsc.type = "sine"; ambientOsc.frequency.setValueAtTime(45, audioCtx.currentTime);
+        ambientGain.gain.setValueAtTime(0.04, audioCtx.currentTime);
+        ambientOsc.connect(ambientGain); ambientGain.connect(audioCtx.destination);
+        ambientOsc.start();
+    } catch(e) {}
+}
+
+function playFallbackSound(freq, duration, type="sawtooth", vol=0.1) {
+    if (!audioCtx) return;
+    try {
+        let osc = audioCtx.createOscillator(); let gain = audioCtx.createGain();
+        osc.type = type; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + duration);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + duration);
+    } catch(e){}
+}
+
+function toggleSynthChase(start) {
+    if (!audioCtx) return;
+    if (start && !synthChaseOsc) {
+        synthChaseOsc = audioCtx.createOscillator(); synthChaseGain = audioCtx.createGain();
+        synthChaseOsc.type = "sawtooth"; synthChaseOsc.frequency.setValueAtTime(65, audioCtx.currentTime);
+        synthChaseGain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+        synthChaseOsc.connect(synthChaseGain); synthChaseGain.connect(audioCtx.destination);
+        synthChaseOsc.start();
+    } else if (!start && synthChaseOsc) {
+        try { synthChaseOsc.stop(); } catch(e){}
+        synthChaseOsc = null; synthChaseGain = null;
+    }
+}
+
+function toggleSynthBreath(start) {
+    if (!audioCtx) return;
+    if (start && !synthBreathOsc) {
+        synthBreathOsc = audioCtx.createOscillator(); synthBreathGain = audioCtx.createGain();
+        synthBreathOsc.type = "triangle"; synthBreathOsc.frequency.setValueAtTime(90, audioCtx.currentTime);
+        synthBreathGain.gain.setValueAtTime(0.03, audioCtx.currentTime);
+        synthBreathOsc.connect(synthBreathGain); synthBreathGain.connect(audioCtx.destination);
+        synthBreathOsc.start();
+    } else if (!start && synthBreathOsc) {
+        try { synthBreathOsc.stop(); } catch(e){}
+        synthBreathOsc = null; synthBreathGain = null;
+    }
+}
+
+function stopAllContinuousSounds() {
+    if (chaseFilePlaying) { sndChase.pause(); chaseFilePlaying = false; }
+    if (breathFilePlaying) { sndBreath.pause(); breathFilePlaying = false; }
+    toggleSynthChase(false); toggleSynthBreath(false);
+}
+
+const FOV = Math.PI / 3, HALF_FOV = FOV / 2, MAX_DEPTH = 18, PLAYER_MAX_HEALTH = 100;
+const PLAYER_SPEED = 0.025; 
+
+const mapSize = 35; 
+let gameMap = [];
+const exitX = mapSize - 1.5, exitY = mapSize - 1.5;
+
+let player = { x: 1.5, y: 1.5, angle: 0, pitch: 0, health: PLAYER_MAX_HEALTH, damageEffect: 0, flashlight: true, notesCollected: 0, stepTimer: 0, isSprinting: false, darkMode: false };
+let monsters = [];
+let notes = [];
+let noteAnimTimer = 0;
+
+function startGame(isDark) {
+    player.darkMode = isDark;
+    menuContainer.style.display = "none";
+    resetGame();
+    currentState = 1;
+    setTimeout(() => { canvas.requestPointerLock(); }, 50);
+}
+
+function resetGame() {
+    gameMap = [];
+    for (let y = 0; y < mapSize; y++) gameMap.push(new Array(mapSize).fill(1));
+    generateMaze();
+
+    player.x = 1.5; player.y = 1.5; player.angle = 0; player.pitch = 0;
+    player.health = PLAYER_MAX_HEALTH; player.damageEffect = 0;
+    player.flashlight = true; player.notesCollected = 0; player.stepTimer = 0;
+
+    monsters = [
+        { x: 15.5, y: 15.5, type: 0, speed: 0.021, state: "WANDER", targetX: 15.5, targetY: 15.5, lastSeenX: null, lastSeenY: null },
+        { x: 25.5, y: 5.5,  type: 1, speed: 0.023, state: "WANDER", targetX: 25.5, targetY: 5.5,  lastSeenX: null, lastSeenY: null },
+        { x: 5.5,  y: 25.5, type: 0, speed: 0.019, state: "WANDER", targetX: 5.5,  targetY: 25.5, lastSeenX: null, lastSeenY: null }
+    ];
+
+    notes = [];
+    while (notes.length < 10) {
+        let rx = Math.floor(Math.random() * (mapSize - 2)) + 1, ry = Math.floor(Math.random() * (mapSize - 2)) + 1;
+        if (gameMap[ry][rx] === 0 && !(rx <= 3 && ry <= 3) && !(rx >= mapSize-4 && ry >= mapSize-4)) {
+            if (!notes.some(n => n.x === rx + 0.5 && n.y === ry + 0.5)) notes.push({ x: rx + 0.5, y: ry + 0.5, collected: false });
+        }
+    }
+}
+
+// 100% БЕЗОПАСНЫЙ СТАБИЛЬНЫЙ АЛГОРИТМ ГЕНЕРАЦИИ ЛАБИРИНТА
+function generateMaze() {
+    let mazeW = Math.floor(mapSize / 2), mazeH = Math.floor(mapSize / 2);
+    let grid = [];
+    for (let y = 0; y < mazeH; y++) {
+        grid[y] = [];
+        for (let x = 0; x < mazeW; x++) grid[y][x] = { x, y, visited: false };
+    }
+    
+    let stack = [];
+    let current = grid[0][0];
+    current.visited = true;
+    
+    // Ограничение итераций во избежание зависаний
+    let safetyCounter = 0;
+    while (safetyCounter < 5000) {
+        safetyCounter++;
+        let neighbors = [];
+        let dirs = [[0,-1], [1,0], [0,1], [-1,0]];
+        
+        for (let d of dirs) {
+            let nx = current.x + d[0], ny = current.y + d[1];
+            if (nx >= 0 && nx < mazeW && ny >= 0 && ny < mazeH) {
+                if (!grid[ny][nx].visited) neighbors.push(grid[ny][nx]);
+            }
+        }
+        
+        if (neighbors.length > 0) {
+            let next = neighbors[Math.floor(Math.random() * neighbors.length)];
+            next.visited = true;
+            stack.push(current);
+            
+            let mapX = current.x * 2 + 1, mapY = current.y * 2 + 1;
+            let nMapX = next.x * 2 + 1, nMapY = next.y * 2 + 1;
+            
+            gameMap[mapY][mapX] = 0;
+            gameMap[nMapY][nMapX] = 0;
+            gameMap[mapY + (next.y - current.y)][mapX + (next.x - current.x)] = 0;
+            
+            current = next;
+        } else if (stack.length > 0) {
+            current = stack.pop();
+        } else {
+            break;
+        }
+    }
+    gameMap[1][1] = 0; gameMap[1][2] = 0; gameMap[2][1] = 0;
+    gameMap[mapSize-2][mapSize-2] = 0; gameMap[mapSize-2][mapSize-3] = 0; gameMap[mapSize-3][mapSize-2] = 0;
+}
+
+function checkLineOfSight(mx, my, tx, ty) {
+    let dist = Math.hypot(tx - mx, ty - my);
+    if (dist > 10) return false;
+    let steps = Math.floor(dist * 12);
+    let dx = (tx - mx) / steps, dy = (ty - my) / steps;
+    let cx = mx, cy = my;
+    for (let i = 0; i < steps; i++) {
+        cx += dx; cy += dy;
+        if (gameMap[Math.floor(cy)][Math.floor(cx)] > 0) return false;
+    }
+    return true;
+}
+
+let keys = {};
+window.addEventListener("keydown", e => { keys[e.code] = true; });
+window.addEventListener("keyup", e => keys[e.code] = false);
+
+function update() {
+    if (currentState !== 1) return;
+    if (player.damageEffect > 0) player.damageEffect -= 0.02;
+    noteAnimTimer += 0.05;
+
+    let currentSpeed = PLAYER_SPEED;
+    if (keys["ShiftLeft"] && (keys["KeyW"] || keys["KeyS"] || keys["KeyA"] || keys["KeyD"])) {
+        player.isSprinting = true; currentSpeed = PLAYER_SPEED * 1.7;
+        sndBreath.play().then(() => { breathFilePlaying = true; }).catch(() => { toggleSynthBreath(true); });
+    } else {
+        player.isSprinting = false;
+        if (breathFilePlaying) { sndBreath.pause(); breathFilePlaying = false; }
+        toggleSynthBreath(false);
+    }
+
+    let moveX = 0, moveY = 0;
+    if (keys["KeyW"]) { moveX += Math.cos(player.angle); moveY += Math.sin(player.angle); }
+    if (keys["KeyS"]) { moveX -= Math.cos(player.angle); moveY -= Math.sin(player.angle); }
+    if (keys["KeyA"]) { moveX += Math.sin(player.angle); moveY -= Math.cos(player.angle); }
+    if (keys["KeyD"]) { moveX -= Math.sin(player.angle); moveY += Math.cos(player.angle); }
+
+    let nextX = player.x + moveX * currentSpeed;
+    let nextY = player.y + moveY * currentSpeed;
+    let moved = false;
+    if (gameMap[Math.floor(player.y)][Math.floor(nextX)] === 0) { player.x = nextX; moved = true; }
+    if (gameMap[Math.floor(nextY)][Math.floor(player.x)] === 0) { player.y = nextY; moved = true; }
+
+    if (moved && (moveX !== 0 || moveY !== 0)) {
+        player.stepTimer += player.isSprinting ? 1.8 : 1;
+        if (player.stepTimer > 25) {
+            sndStep.play().catch(() => playFallbackSound(110, 0.07, "triangle", 0.08));
+            player.stepTimer = 0;
+        }
+    }
+
+    notes.forEach(n => {
+        if (!n.collected && Math.hypot(n.x - player.x, n.y - player.y) < 0.5) {
+            n.collected = true; player.notesCollected++;
+            playFallbackSound(350, 0.4, "triangle", 0.3);
+        }
+    });
+
+    if (player.notesCollected >= 10 && Math.hypot(exitX - player.x, exitY - player.y) < 0.7) {
+        currentState = 3; stopAllContinuousSounds(); document.exitPointerLock();
+        playFallbackSound(750, 1.5, "sine", 0.4);
+        return;
+    }
+
+    let anyMonsterChasing = false;
+    monsters.forEach(m => {
+        let hasLOS = checkLineOfSight(m.x, m.y, player.x, player.y);
+        if (hasLOS) { m.state = "CHASE"; m.lastSeenX = player.x; m.lastSeenY = player.y; } 
+        else if (m.state === "CHASE") { m.state = "CHECK_LAST_SPOT"; }
+
+        let targetX = m.x, targetY = m.y;
+        if (m.state === "CHASE") { targetX = player.x; targetY = player.y; anyMonsterChasing = true; } 
+        else if (m.state === "CHECK_LAST_SPOT") {
+            targetX = m.lastSeenX; targetY = m.lastSeenY;
+            if (Math.hypot(m.x - m.lastSeenX, m.y - m.lastSeenY) < 0.4) m.state = "WANDER";
+        } else if (m.state === "WANDER") {
+            if (Math.hypot(m.x - m.targetX, m.y - m.targetY) < 0.4 || gameMap[Math.floor(m.targetY)][Math.floor(m.targetX)] > 0) {
+                let rx = Math.floor(Math.random() * (mapSize - 2)) + 1, ry = Math.floor(Math.random() * (mapSize - 2)) + 1;
+                if (gameMap[ry][rx] === 0) { m.targetX = rx + 0.5; m.targetY = ry + 0.5; }
+            }
+            targetX = m.targetX; targetY = m.targetY;
+        }
+
+        let mAngle = Math.atan2(targetY - m.y, targetX - m.x);
+        let mSpeed = player.darkMode ? m.speed * 1.3 : m.speed;
+        let mNextX = m.x + Math.cos(mAngle) * mSpeed, mNextY = m.y + Math.sin(mAngle) * mSpeed;
+        if (gameMap[Math.floor(m.y)][Math.floor(mNextX)] === 0) m.x = mNextX;
+        if (gameMap[Math.floor(mNextY)][Math.floor(m.x)] === 0) m.y = mNextY;
+
+        if (Math.hypot(player.x - m.x, player.y - m.y) < 0.6) {
+            player.health -= 1.2; player.damageEffect = 0.6;
+            sndHit.play().catch(() => playFallbackSound(60, 0.15, "sawtooth", 0.4));
+            if (player.health <= 0) {
+                currentState = 2; stopAllContinuousSounds(); document.exitPointerLock();
+                sndDeath.play().catch(() => playFallbackSound(40, 2.5, "sawtooth", 0.7));
+            }
+        }
+    });
+
+    if (anyMonsterChasing) {
+        sndChase.play().then(() => { chaseFilePlaying = true; }).catch(() => toggleSynthChase(true));
+    } else {
+        if (chaseFilePlaying) { sndChase.pause(); chaseFilePlaying = false; }
+        toggleSynthChase(false);
+    }
+}
+
+function draw() {
+    if (currentState === 0) return;
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    if (currentState === 2) {
+        ctx.fillStyle = "#f00"; ctx.font = "48px sans-serif"; ctx.textAlign = "center"; ctx.fillText("ВЫ ПОГИБЛИ", canvas.width / 2, canvas.height / 2);
+        ctx.fillStyle = "#fff"; ctx.font = "18px sans-serif"; ctx.fillText("Кликните для возврата в меню", canvas.width / 2, canvas.height / 2 + 50);
+        return;
+    }
+    if (currentState === 3) {
+        ctx.fillStyle = "#0f0"; ctx.font = "48px sans-serif"; ctx.textAlign = "center"; ctx.fillText("ВЫ СБЕЖАЛИ!", canvas.width / 2, canvas.height / 2);
+        ctx.fillStyle = "#fff"; ctx.font = "18px sans-serif"; ctx.fillText("Кликните для возврата в меню", canvas.width / 2, canvas.height / 2 + 50);
+        return;
+    }
+
+    let halfH = canvas.height / 2;
+    let depthBuffer = new Array(canvas.width).fill(MAX_DEPTH);
+    let numRays = canvas.width;
+    
+    for (let i = 0; i < numRays; i++) {
+        let rayAngle = (player.angle - HALF_FOV) + (i / numRays) * FOV;
+        let distance = 0, hitWall = false, cos = Math.cos(rayAngle), sin = Math.sin(rayAngle);
+        let sideHit = 0; 
+
+        while (!hitWall && distance < MAX_DEPTH) {
+            distance += 0.04;
+            let checkX = player.x + cos * distance;
+            let checkY = player.y + sin * distance;
+            
+            if (checkX < 0 || checkX >= mapSize || checkY < 0 || checkY >= mapSize) {
+                hitWall = true; distance = MAX_DEPTH;
+            } else if (gameMap[Math.floor(checkY)][Math.floor(checkX)] > 0) {
+                hitWall = true;
+                let blockX = Math.floor(checkX);
+                let blockY = Math.floor(checkY);
+                let fX = checkX - blockX;
+                let fY = checkY - blockY;
+                if (Math.abs(fX - 0.5) > Math.abs(fY - 0.5)) { sideHit = 1; }
+            }
+        }
+        depthBuffer[i] = distance;
+        let correctedDist = distance * Math.cos(rayAngle - player.angle);
+        let wallHeight = Math.min(canvas.height, (canvas.height / correctedDist));
+        
+        let flashIntensity = 200;
+        if (player.darkMode) {
+            flashIntensity = (player.flashlight && correctedDist < 2.5 && Math.abs(rayAngle - player.angle) < 0.28) ? Math.max(0, (1 - (correctedDist / 2.3))) * 180 : 0;
+        } else {
+            flashIntensity = Math.max(10, 180 - (correctedDist * 10));
+        }
+        
+        if (sideHit === 1) { flashIntensity *= 0.6; }
+        
+        ctx.strokeStyle = `rgb(${flashIntensity}, ${flashIntensity}, ${flashIntensity})`; ctx.lineWidth = 1; ctx.beginPath();
+        ctx.moveTo(i, halfH - wallHeight / 2 + player.pitch); ctx.lineTo(i, halfH + wallHeight / 2 + player.pitch); ctx.stroke();
+    }
+
+    let sprites = [];
+    notes.forEach(n => { if (!n.collected) sprites.push({ x: n.x, y: n.y, source: imgNote, isNote: true }); });
+    if (player.notesCollected >= 10) sprites.push({ x: exitX, y: exitY, source: "#00f", isExit: true });
+    monsters.forEach(m => { sprites.push({ x: m.x, y: m.y, source: m.type === 0 ? imgMonster1 : imgMonster2, isMonster: true, color: m.type === 0 ? "#a00" : "#505" }); });
+
+    sprites.sort((a, b) => Math.hypot(b.x - player.x, b.y - player.y) - Math.hypot(a.x - player.x, a.y - player.y));
+    sprites.forEach(s => draw3DObject(s, depthBuffer, halfH));
+
+    if (player.damageEffect > 0) { ctx.fillStyle = `rgba(200, 0, 0, ${player.damageEffect})`; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+
+    ctx.textAlign = "left"; ctx.font = "18px 'Courier New'"; ctx.fillStyle = player.health > 30 ? "#0f0" : "#f00";
+    ctx.fillText("ЖИЗНЬ: " + Math.floor(player.health) + "%", 20, 40);
+    ctx.fillStyle = "#fff"; ctx.fillText("ЗАПИСКИ: " + player.notesCollected + " / 10", 20, 70);
+
+    ctx.fillStyle = "rgba(0, 255, 0, 0.4)"; ctx.fillRect(canvas.width/2 - 2, canvas.height/2 - 2, 4, 4);
+
+    let mapScale = 4;
+    for (let y = 0; y < mapSize; y++) {
+        for (let x = 0; x < mapSize; x++) {
+            if (gameMap[y][x] > 0) { ctx.fillStyle = "#222"; ctx.fillRect(canvas.width - 160 + x * mapScale, 20 + y * mapScale, mapScale, mapScale); }
+        }
+    }
+    if (!player.darkMode) {
+        ctx.fillStyle = "#0f0";
+        notes.forEach(n => { if (!n.collected) ctx.fillRect(canvas.width - 160 + Math.floor(n.x) * mapScale, 20 + Math.floor(n.y) * mapScale, 3, 3); });
+    }
+    if (player.notesCollected >= 10) { ctx.fillStyle = "#00f"; ctx.fillRect(canvas.width - 160 + Math.floor(exitX) * mapScale, 20 + Math.floor(exitY) * mapScale, mapScale, mapScale); }
+    
+    ctx.save();
+    ctx.translate(canvas.width - 160 + player.x * mapScale, 20 + player.y * mapScale);
+    ctx.rotate(player.angle);
+    ctx.fillStyle = "#0f0"; ctx.beginPath();
+    ctx.moveTo(4, 0); ctx.lineTo(-4, -3); ctx.lineTo(-4, 3); ctx.closePath(); ctx.fill();
+    ctx.restore();
+}
+
+function draw3DObject(obj, depthBuffer, halfH) {
+    let dx = obj.x - player.x, dy = obj.y - player.y;
+    let dist = Math.hypot(dx, dy);
+    let spriteAngle = Math.atan2(dy, dx) - player.angle;
+    while (spriteAngle < -Math.PI) spriteAngle += Math.PI * 2;
+    while (spriteAngle > Math.PI) spriteAngle -= Math.PI * 2;
+
+    if (Math.abs(spriteAngle) > HALF_FOV + 0.2 || dist < 0.2 || dist > MAX_DEPTH) return;
+
+    let spriteScreenSize = Math.min(canvas.height, canvas.height / dist);
+    let objWidth = spriteScreenSize / (obj.isNote ? 2.5 : 1.2);
+    let screenX = (canvas.width / 2) + Math.tan(spriteAngle) * (canvas.width / 2);
+
+    let visibility = 1;
+    if (player.darkMode) {
+        visibility = (player.flashlight && dist < 2.5 && Math.abs(spriteAngle) < 0.25) ? Math.max(0, (1 - (dist / 2.3))) : 0;
+    } else {
+        visibility = Math.max(0.1, 1 - (dist / 12));
+    }
+    if (visibility <= 0) return;
+
+    let startX = Math.floor(screenX - objWidth / 2);
+    let endX = Math.floor(screenX + objWidth / 2);
+
+    for (let x = startX; x < endX; x++) {
+        if (x >= 0 && x < canvas.width && depthBuffer[x] > dist) {
+            ctx.save();
+            ctx.globalAlpha = visibility;
+
+            let tX = (x - startX) / objWidth;
+            if (obj.isNote) tX = (tX + noteAnimTimer) % 1; 
+
+            let yOffset = obj.isNote ? Math.sin(noteAnimTimer * 2) * (spriteScreenSize / 8) : 0;
+            let topY = halfH - spriteScreenSize / 2 + player.pitch + yOffset;
+
+            if (obj.isMonster || obj.isNote) {
+                if (obj.source.complete && obj.source.naturalWidth !== 0) {
+                    ctx.drawImage(obj.source, tX * obj.source.width, 0, 1, obj.source.height, x, topY, 1, spriteScreenSize);
+                } else {
+                    ctx.fillStyle = obj.color || "#fff";
+                    ctx.fillRect(x, topY, 1, spriteScreenSize);
+                    if (obj.isMonster) {
+                        ctx.fillStyle = "#ff0";
+                        ctx.fillRect(x, topY + spriteScreenSize/3, 1, spriteScreenSize/12);
+                    }
+                }
+            } else if (obj.isExit) {
+                ctx.fillStyle = "#00f";
+                ctx.fillRect(x, 0, 1, canvas.height);
+            }
+            ctx.restore();
+        }
+    }
+}
+
+function gameLoop() { update(); draw(); requestAnimationFrame(gameLoop); }
+gameLoop();
+</script>
+
+</body>
+</html>
+
